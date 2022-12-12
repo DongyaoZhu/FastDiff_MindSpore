@@ -45,7 +45,9 @@ class DiffusionDBlock(nn.Cell):
         return x
 
 
-class TimeAware_LVCBlock(nn.Cell):
+class TimeAware_LVCBlock(nn.Cells):
+    ''' time-aware location-variable convolutions
+    '''
     def __init__(self,
                  in_channels,
                  cond_channels,
@@ -63,18 +65,13 @@ class TimeAware_LVCBlock(nn.Cell):
         self.cond_hop_length = cond_hop_length
         self.conv_layers = conv_layers
         self.conv_kernel_size = conv_kernel_size
-        self.convs = []
+        self.convs = torch.nn.ModuleList()
 
-        self.upsample = nn.Conv1dTranspose(
-            in_channels,
-            in_channels,
-            kernel_size=upsample_ratio*2,
-            stride=upsample_ratio,
-            padding=upsample_ratio // 2 + upsample_ratio % 2,
-            output_padding=upsample_ratio % 2
-        )
-        print('upsample w:', self.upsample.weight.shape)
-        self.act = nn.LeakyReLU(0.2)
+        self.upsample = torch.nn.ConvTranspose1d(in_channels, in_channels,
+                                    kernel_size=upsample_ratio*2, stride=upsample_ratio,
+                                    padding=upsample_ratio // 2 + upsample_ratio % 2,
+                                    output_padding=upsample_ratio % 2)
+
 
         self.kernel_predictor = KernelPredictor(
             cond_channels=cond_channels,
@@ -88,24 +85,31 @@ class TimeAware_LVCBlock(nn.Cell):
         )
 
         # the layer-specific fc for noise scale embedding
-        self.fc_t = nn.Dense(noise_scale_embed_dim_out, cond_channels)
+        self.fc_t = torch.nn.Linear(noise_scale_embed_dim_out, cond_channels)
 
         for i in range(conv_layers):
             padding = (3 ** i) * int((conv_kernel_size - 1) / 2)
-            conv = nn.Conv1d(in_channels, in_channels, kernel_size=conv_kernel_size, padding=padding, dilation=3 ** i)
+            conv = torch.nn.Conv1d(in_channels, in_channels, kernel_size=conv_kernel_size, padding=padding, dilation=3 ** i)
 
             self.convs.append(conv)
-        self.convs = nn.SequentialCell(self.convs)
 
 
     def forward(self, data):
+        ''' forward propagation of the time-aware location-variable convolutions.
+        Args:
+            x (Tensor): the input sequence (batch, in_channels, in_length)
+            c (Tensor): the conditioning sequence (batch, cond_channels, cond_length)
+
+        Returns:
+            Tensor: the output sequence (batch, in_channels, in_length)
+        '''
         x, audio_down, c, noise_embedding = data
         batch, in_channels, in_length = x.shape
 
         noise = (self.fc_t(noise_embedding)).unsqueeze(-1)  # (B, 80)
         condition = c + noise  # (B, 80, T)
         kernels, bias = self.kernel_predictor(condition)
-        x = self.act(x)
+        x = F.leaky_relu(x, 0.2)
         x = self.upsample(x)
 
         for i in range(self.conv_layers):
