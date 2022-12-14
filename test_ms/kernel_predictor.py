@@ -2,36 +2,38 @@ import mindspore as ms
 import mindspore.nn as nn
 import mindspore.ops as ops
 
+ms.context.set_context(mode=ms.context.PYNATIVE_MODE, device_target='CPU')
+import numpy as np
+np.random.seed(0)
 
-class DiffusionDBlock(nn.Cell):
-    def __init__(self, in_channels, out_channels, factor):
-        super().__init__()
-        self.factor = factor
-        self.residual_dense = nn.Conv1d(in_channels, out_channels, 1, has_bias=True)
-        self.conv = nn.SequentialCell(
-            nn.Conv1d(in_channels, out_channels, 3, has_bias=True, dilation=1, pad_mode='pad', padding=1),
-            nn.Conv1d(out_channels, out_channels, 3, has_bias=True, dilation=2, pad_mode='pad', padding=2),
-            nn.Conv1d(out_channels, out_channels, 3, has_bias=True, dilation=4, pad_mode='pad', padding=4),
-        )
-        self.act = nn.LeakyReLU(0.2)
-    
-    def construct(self, x):
-        size = x.shape[2] // self.factor
-        res = self.residual_dense(x)
+inner_channels = 32
+in_channels = inner_channels
+cond_channels = 80
+num_conv_layers = 4
+conv_kernel_size = 3
+cond_hop_length = 8
+# cond_hop_length = 64
+# cond_hop_length = 256
+kpnet_hidden_channels = 64
+kpnet_conv_size = 3
+kpnet_dropout = 0.0
 
-        res = ops.expand_dims(res, 3)
-        res = ops.interpolate(res, sizes=(size, 1), mode='bilinear', coordinate_transformation_mode='half_pixel')
-        res = ops.squeeze(res, 3)
+x = np.random.random([1, cond_channels, 256]).astype(np.float32)
+w0 = np.random.random([kpnet_hidden_channels, cond_channels, 5]).astype(np.float32)
+w1 = np.random.random([kpnet_hidden_channels, kpnet_hidden_channels, kpnet_conv_size]).astype(np.float32)
 
-        x = ops.expand_dims(x, 3)
-        x = ops.interpolate(x, sizes=(size, 1), mode='bilinear', coordinate_transformation_mode='half_pixel')
-        x = ops.squeeze(x, 3)
+conv_in_channels = in_channels
+conv_out_channels = 2 * in_channels
+l_w = conv_in_channels * conv_out_channels * conv_kernel_size * num_conv_layers
+l_b = conv_out_channels * num_conv_layers
 
-        for layer in self.conv:
-            x = self.act(x)
-            x = layer(x)
+w2 = np.random.random([l_w, kpnet_hidden_channels, kpnet_conv_size]).astype(np.float32)
+w3 = np.random.random([l_b, kpnet_hidden_channels, kpnet_conv_size]).astype(np.float32)
 
-        return x
+w0 = ms.Tensor(w0)
+w1 = ms.Tensor(w1)
+w2 = ms.Tensor(w2)
+w3 = ms.Tensor(w3)
 
 
 class KernelPredictor(nn.Cell):
@@ -65,6 +67,7 @@ class KernelPredictor(nn.Cell):
                       pad_mode='pad',
                       padding=(5 - 1) // 2,
                       has_bias=True,
+                      weight_init=w0
             ),
             act,
         )
@@ -77,6 +80,7 @@ class KernelPredictor(nn.Cell):
                       pad_mode='pad',
                       padding=padding,
                       has_bias=True,
+                      weight_init=w1
             ),
             act,
             nn.Conv1d(kpnet_hidden_channels,
@@ -85,23 +89,7 @@ class KernelPredictor(nn.Cell):
                       pad_mode='pad',
                       padding=padding,
                       has_bias=True,
-            ),
-            act,
-            nn.Dropout(1 - kpnet_dropout),
-            nn.Conv1d(kpnet_hidden_channels,
-                      kpnet_hidden_channels,
-                      kpnet_conv_size,
-                      pad_mode='pad',
-                      padding=padding,
-                      has_bias=True,
-            ),
-            act,
-            nn.Conv1d(kpnet_hidden_channels,
-                      kpnet_hidden_channels,
-                      kpnet_conv_size,
-                      pad_mode='pad',
-                      padding=padding,
-                      has_bias=True,
+                      weight_init=w1
             ),
             act,
             nn.Dropout(1 - kpnet_dropout),
@@ -111,6 +99,7 @@ class KernelPredictor(nn.Cell):
                       pad_mode='pad',
                       padding=padding,
                       has_bias=True,
+                      weight_init=w1
             ),
             act,
             nn.Conv1d(kpnet_hidden_channels,
@@ -119,6 +108,26 @@ class KernelPredictor(nn.Cell):
                       pad_mode='pad',
                       padding=padding,
                       has_bias=True,
+                      weight_init=w1
+            ),
+            act,
+            nn.Dropout(1 - kpnet_dropout),
+            nn.Conv1d(kpnet_hidden_channels,
+                      kpnet_hidden_channels,
+                      kpnet_conv_size,
+                      pad_mode='pad',
+                      padding=padding,
+                      has_bias=True,
+                      weight_init=w1
+            ),
+            act,
+            nn.Conv1d(kpnet_hidden_channels,
+                      kpnet_hidden_channels,
+                      kpnet_conv_size,
+                      pad_mode='pad',
+                      padding=padding,
+                      has_bias=True,
+                      weight_init=w1
             ),
             act,
         )
@@ -130,6 +139,7 @@ class KernelPredictor(nn.Cell):
             pad_mode='pad',
             padding=padding,
             has_bias=True,
+            weight_init=w2
         )
         self.bias_conv = nn.Conv1d(
             kpnet_hidden_channels,
@@ -138,6 +148,7 @@ class KernelPredictor(nn.Cell):
             pad_mode='pad',
             padding=padding,
             has_bias=True,
+            weight_init=w3
         )
 
     def construct(self, c):
@@ -165,4 +176,17 @@ class KernelPredictor(nn.Cell):
         )
         return kernels, bias
 
+
+if __name__ == '__main__':
+    net = KernelPredictor(
+        cond_channels=cond_channels,
+        conv_in_channels=in_channels,
+        conv_out_channels=2 * in_channels,
+        num_conv_layers=num_conv_layers,
+        conv_kernel_size=conv_kernel_size,
+        kpnet_hidden_channels=kpnet_hidden_channels,
+        kpnet_conv_size=kpnet_conv_size,
+        kpnet_dropout=kpnet_dropout
+    )
+    net(ms.Tensor(x))
 

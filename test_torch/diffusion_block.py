@@ -6,8 +6,8 @@ from torch.nn import Conv1d
 
 import numpy as np
 np.random.seed(0)
-in_channels = 3
-out_channels = 7
+in_channels = 32
+out_channels = 32
 x = np.random.random([1, in_channels, 256]).astype(np.float32)
 w0 = np.random.random([out_channels, in_channels, 3]).astype(np.float32)
 w1 = np.random.random([out_channels, out_channels, 3]).astype(np.float32)
@@ -32,19 +32,20 @@ class DiffusionDBlock(nn.Module):
     size = x.shape[-1] // self.factor
 
     residual = self.residual_dense(x)
-    print('torch res:', residual.shape, residual)
+    # print('torch res:', residual.shape, residual)
     residual = F.interpolate(residual, mode='linear', align_corners=False, size=size)
-    print('torch res:', residual.shape, residual)
+    # print('torch res:', residual.shape, residual)
 
     x = F.interpolate(x, mode='linear', align_corners=False, size=size)
-    print('torch x:', x.shape, x)
+    # print('torch x:', x.shape, x)
     for layer in self.conv:
       x = F.leaky_relu(x, 0.2)
       x = layer(x)
-      print('layer x:', x.shape, x)
+    #   print('layer x:', x.shape, x)
 
     return x + residual
 
 
-net = DiffusionDBlock(in_channels, out_channels, 4)
-net(torch.tensor(x))
+if __name__ == '__main__':
+    net = DiffusionDBlock(in_channels, out_channels, 4)
+    net(torch.tensor(x))
